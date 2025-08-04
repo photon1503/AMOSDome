@@ -31,6 +31,7 @@ namespace ASCOM.AMOS.Dome
     {
         // Constants used for Profile persistence
         internal const string comPortProfileName = "COM Port";
+
         internal const string comPortDefault = "COM1";
         internal const string traceStateProfileName = "Trace Level";
         internal const string traceStateDefault = "true";
@@ -44,6 +45,10 @@ namespace ASCOM.AMOS.Dome
         internal static AstroUtils astroUtilities; // ASCOM AstroUtilities object for use as required
         internal static TraceLogger tl; // Local server's trace logger object for diagnostic log with information that you specify
         internal static ASCOM.DriverAccess.Dome driver;
+
+        private static bool _isSlewing = false;
+        private static bool _slewByAzimuthInProgress = false;
+        private static double _targetAzimuth = 0;
 
         /// <summary>
         /// Initializes a new instance of the device Hardware class.
@@ -218,17 +223,17 @@ namespace ASCOM.AMOS.Dome
         /// </summary>
         /// <remarks>
         /// TODO: Release any managed or unmanaged resources that are used in this class.
-        /// 
+        ///
         /// Do not call this method from the Dispose method in your driver class.
         ///
-        /// This is because this hardware class is decorated with the <see cref="HardwareClassAttribute"/> attribute and this Dispose() method will be called 
-        /// automatically by the  local server executable when it is irretrievably shutting down. This gives you the opportunity to release managed and unmanaged 
+        /// This is because this hardware class is decorated with the <see cref="HardwareClassAttribute"/> attribute and this Dispose() method will be called
+        /// automatically by the  local server executable when it is irretrievably shutting down. This gives you the opportunity to release managed and unmanaged
         /// resources in a timely fashion and avoid any time delay between local server close down and garbage collection by the .NET runtime.
         ///
         /// For the same reason, do not call the SharedResources.Dispose() method from this method. Any resources used in the static shared resources class
-        /// itself should be released in the SharedResources.Dispose() method as usual. The SharedResources.Dispose() method will be called automatically 
+        /// itself should be released in the SharedResources.Dispose() method as usual. The SharedResources.Dispose() method will be called automatically
         /// by the local server just before it shuts down.
-        /// 
+        ///
         /// </remarks>
         public static void Dispose()
         {
@@ -282,8 +287,6 @@ namespace ASCOM.AMOS.Dome
 
                     driver = new ASCOM.DriverAccess.Dome("ASCOM.MaestroDome.Dome");
                     driver.Connected = true;
-                    _shutterState = driver.ShutterStatus;
-
 
                     connectedState = true;
                 }
@@ -317,7 +320,7 @@ namespace ASCOM.AMOS.Dome
         {
             get
             {
-                return driver.DriverInfo; 
+                return driver.DriverInfo;
             }
         }
 
@@ -340,7 +343,7 @@ namespace ASCOM.AMOS.Dome
             // set by the driver wizard
             get
             {
-                return driver.InterfaceVersion; 
+                return driver.InterfaceVersion;
             }
         }
 
@@ -353,15 +356,12 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return driver.Name;
-                
             }
         }
 
-        #endregion
+        #endregion Common properties and methods.
 
         #region IDome Implementation
-
-        private static ShutterState _shutterState = ShutterState.shutterError; // Variable to hold the current state of the shutter
 
         /// <summary>
         /// Immediately stops any and all movement of the dome.
@@ -369,7 +369,8 @@ namespace ASCOM.AMOS.Dome
         internal static void AbortSlew()
         {
             driver.AbortSlew();
-            
+            _isSlewing = false; // Reset the slewing flag
+            _slewByAzimuthInProgress = false; // Reset the slew by azimuth flag
         }
 
         /// <summary>
@@ -380,7 +381,6 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return driver.Altitude;
-                
             }
         }
 
@@ -400,9 +400,8 @@ namespace ASCOM.AMOS.Dome
         internal static bool AtHome
         {
             get
-            {                
-                return (driver.CanSetShutter);
-
+            {
+                return (driver.AtHome);
             }
         }
 
@@ -413,8 +412,7 @@ namespace ASCOM.AMOS.Dome
         {
             get
             {
-                // if athome or atpark is true, then return true
-                return (driver.CanSetShutter);
+                return (driver.AtPark);
             }
         }
 
@@ -426,7 +424,6 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return driver.Azimuth;
-                
             }
         }
 
@@ -438,7 +435,6 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return driver.CanFindHome;
-                
             }
         }
 
@@ -450,7 +446,6 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return true;
-                
             }
         }
 
@@ -462,12 +457,11 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return driver.CanSetAltitude;
-                
             }
         }
 
         /// <summary>
-        /// <see langword="true" /> if driver is capable of rotating the dome. Muste be <see "langword="false" /> for a 
+        /// <see langword="true" /> if driver is capable of rotating the dome. Muste be <see "langword="false" /> for a
         /// roll-off roof or clamshell.
         /// </summary>
         internal static bool CanSetAzimuth
@@ -475,7 +469,6 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return driver.CanSetAzimuth;
-                
             }
         }
 
@@ -487,7 +480,6 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return true;
-                
             }
         }
 
@@ -500,7 +492,6 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return true;
-                
             }
         }
 
@@ -512,7 +503,6 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return driver.CanSlave;
-                
             }
         }
 
@@ -525,7 +515,6 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return driver.CanSyncAzimuth;
-                
             }
         }
 
@@ -534,21 +523,7 @@ namespace ASCOM.AMOS.Dome
         /// </summary>
         internal static void CloseShutter()
         {
-            _shutterState = ShutterState.shutterClosing;
-            driver.Park();
-            //wait until parked
-            while (driver.CanSetShutter == false)
-            {
-                System.Threading.Thread.Sleep(1000);
-            }
             driver.CloseShutter();
-            LogMessage("CloseShutter", "Shutter has been closed");
-            //monitor shutter state
-            while (driver.ShutterStatus != ShutterState.shutterClosed)
-            {
-                System.Threading.Thread.Sleep(1000);
-            }
-            _shutterState = ShutterState.shutterClosed;
         }
 
         /// <summary>
@@ -557,7 +532,6 @@ namespace ASCOM.AMOS.Dome
         internal static void FindHome()
         {
             driver.FindHome();
-            
         }
 
         /// <summary>
@@ -565,25 +539,7 @@ namespace ASCOM.AMOS.Dome
         /// </summary>
         internal static void OpenShutter()
         {
-            _shutterState = ShutterState.shutterOpening;
-            driver.Park();
-            //wait until parked
-                        
-            while (driver.CanSetShutter == false)
-            {
-                System.Threading.Thread.Sleep(1000);
-            }
-            
-
-
             driver.OpenShutter();
-            
-            while (driver.ShutterStatus != ShutterState.shutterOpen)
-            {
-                System.Threading.Thread.Sleep(1000);
-            }
-            LogMessage("OpenShutter", "Shutter has been opened");
-            _shutterState = ShutterState.shutterOpen;
         }
 
         /// <summary>
@@ -592,7 +548,6 @@ namespace ASCOM.AMOS.Dome
         internal static void Park()
         {
             driver.Park();
-            
         }
 
         /// <summary>
@@ -601,7 +556,6 @@ namespace ASCOM.AMOS.Dome
         internal static void SetPark()
         {
             driver.SetPark();
-            
         }
 
         /// <summary>
@@ -610,17 +564,8 @@ namespace ASCOM.AMOS.Dome
         internal static ShutterState ShutterStatus
         {
             get
-            {  
-                
-                if (_shutterState == ShutterState.shutterError)
-                {                    
-                    return driver.ShutterStatus; 
-                }
-                else
-                {
-                    LogMessage("ShutterStatus Get", false.ToString());
-                    return _shutterState;
-                }                            
+            {
+                return driver.ShutterStatus;
             }
         }
 
@@ -632,12 +577,10 @@ namespace ASCOM.AMOS.Dome
             get
             {
                 return driver.Slaved;
-                
             }
             set
             {
                 driver.Slaved = value;
-                
             }
         }
 
@@ -650,7 +593,6 @@ namespace ASCOM.AMOS.Dome
         internal static void SlewToAltitude(double Altitude)
         {
             driver.SlewToAltitude(Altitude);
-            
         }
 
         /// <summary>
@@ -663,21 +605,31 @@ namespace ASCOM.AMOS.Dome
         /// </param>
         internal static void SlewToAzimuth(double Azimuth)
         {
+            _isSlewing = true;
+            _targetAzimuth = Azimuth; // Store the target azimuth for use in the Slewing property
+            _slewByAzimuthInProgress = true; // Set the flag to indicate that a slew by azimuth is in progress
             driver.SlewToAzimuth(Azimuth);
-            
         }
 
         /// <summary>
-        /// <see langword="true" /> if any part of the dome is currently moving or a move command has been issued, 
+        /// <see langword="true" /> if any part of the dome is currently moving or a move command has been issued,
         /// but the dome has not yet started to move. <see langword="false" /> if all dome components are stationary
-        /// and no move command has been issued. /> 
+        /// and no move command has been issued. />
         /// </summary>
         internal static bool Slewing
         {
             get
             {
-                return driver.Slewing;
-                
+                if (!_slewByAzimuthInProgress)
+                {
+                    return driver.Slewing; // If not slewing by azimuth, return the driver's slewing state
+                }
+
+                if (Math.Abs(_targetAzimuth - driver.Azimuth) <= 1.0)
+                {
+                    _isSlewing = false; // Reset the slewing flag if within tolerance
+                }
+                return _isSlewing;
             }
         }
 
@@ -690,12 +642,13 @@ namespace ASCOM.AMOS.Dome
         /// </param>
         internal static void SyncToAzimuth(double Azimuth)
         {
-            driver.SyncToAzimuth(Azimuth);            
+            driver.SyncToAzimuth(Azimuth);
         }
 
-        #endregion
+        #endregion IDome Implementation
 
         #region Private properties and methods
+
         // Useful methods that can be used as required to help with driver development
 
         /// <summary>
@@ -769,7 +722,7 @@ namespace ASCOM.AMOS.Dome
             var msg = string.Format(message, args);
             LogMessage(identifier, msg);
         }
-        #endregion
+
+        #endregion Private properties and methods
     }
 }
-
